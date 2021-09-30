@@ -29,7 +29,7 @@ type NodeDaemon struct {
 	NodeName       string
 	PortMap        map[int]bool
 	PodVisited     map[string]bool
-	GpuUuidByName  map[string]string
+	GpuNameByUuid  map[string]string
 	GemSchedulerIp string
 	mu             sync.Mutex
 }
@@ -45,7 +45,7 @@ func NewNodeDaemon(client *kubesys.KubernetesClient, podMgr *PodManager, nodeNam
 		NodeName:      nodeName,
 		PortMap:       portMap,
 		PodVisited:    make(map[string]bool),
-		GpuUuidByName: make(map[string]string),
+		GpuNameByUuid: make(map[string]string),
 	}
 }
 
@@ -75,16 +75,6 @@ func (daemon *NodeDaemon) Run() {
 	f.WriteString(ip + "\n")
 	f.Sync()
 	f.Close()
-
-	log.Infoln("Loading NVML...")
-	if err := nvml.Init(); err != nil {
-		log.Infof("Failed to initialize NVML: %s.", err)
-		log.Infof("If this is a GPU node, did you set the docker default runtime to `nvidia`?")
-		log.Fatalln("Failed to discover gpus.")
-	}
-	defer func() {
-		log.Infof("Shutdown of NVML returned: %s.", nvml.Shutdown())
-	}()
 
 	n, err := nvml.GetDeviceCount()
 	if err != nil {
@@ -146,7 +136,7 @@ func (daemon *NodeDaemon) Run() {
 		if err != nil && err.Error() != "request status 201 Created" {
 			log.Fatalf("Failed to create gpu %s, %s.", gpu.Name, err)
 		}
-		daemon.GpuUuidByName[fmt.Sprintf("%s-gpu-%d", hostname, index)] = device.UUID
+		daemon.GpuNameByUuid[device.UUID] = fmt.Sprintf("%s-gpu-%d", hostname, index)
 	}
 
 	for {
@@ -198,7 +188,7 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonutil.ObjectNode) {
 	str1 = append(str1, namespace+"/"+podName)
 
 	spec := pod.GetObjectNode("spec")
-	requestMemory, requestCore := 0, 0
+	requestMemory, requestCore := int64(0), int64(0)
 	containers := spec.GetArray("containers")
 	for _, c := range containers {
 		container := c.(map[string]interface{})
@@ -212,11 +202,11 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonutil.ObjectNode) {
 		limits := resources["limits"].(map[string]interface{})
 		if val, ok := limits[ResourceMemory]; ok {
 			m, _ := strconv.Atoi(val.(string))
-			requestMemory += m
+			requestMemory += int64(m)
 		}
 		if val, ok := limits[ResourceCore]; ok {
 			m, _ := strconv.Atoi(val.(string))
-			requestCore += m
+			requestCore += int64(m)
 		}
 	}
 
@@ -225,9 +215,11 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonutil.ObjectNode) {
 		str1 = append(str1, strconv.FormatFloat(float64(requestCore)/100, 'f', 6, 64))
 	}
 	if requestMemory != 0 {
-		str1 = append(str1, strconv.Itoa(1024*requestMemory))
+		str1 = append(str1, strconv.FormatInt(1024*1024*requestMemory, 10))
 	}
 	str1[len(str1)-1] += "\n"
+
+	fmt.Println(str1)
 
 	gpu := annotations.GetString(ResourceUUID)
 
@@ -273,7 +265,7 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonutil.ObjectNode) {
 	if err != nil {
 		log.Fatalf("Failed to get copy pod %s on ns %s, %s.", podName, namespace, err)
 	}
-	copyMeta := copyPod.GetObjectNode("meta")
+	copyMeta := copyPod.GetObjectNode("metadata")
 	copyAnnotations := copyMeta.GetObjectNode("annotations")
 
 	copyAnnotations.Object[AnnGemSchedulerIp] = daemon.GemSchedulerIp

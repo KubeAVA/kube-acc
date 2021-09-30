@@ -80,7 +80,7 @@ func (p *NvidiaDevicePlugin) Start() error {
 }
 
 func (p *NvidiaDevicePlugin) Stop() error {
-	log.Infoln("Stopping the device plugin")
+	log.Infoln("Stopping the device plugin.")
 
 	if p == nil || p.server == nil {
 		return nil

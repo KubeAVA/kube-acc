@@ -22,7 +22,7 @@ func GetDevices() ([]*pluginapi.Device, map[uint]string) {
 	check(err)
 
 	log.Infoln("Getting devices...")
-	devices := []*pluginapi.Device{}
+	var devices []*pluginapi.Device
 	deviceMap := map[uint]string{}
 	for idx := uint(0); idx < n; idx++ {
 		d, err := nvml.NewDevice(idx)

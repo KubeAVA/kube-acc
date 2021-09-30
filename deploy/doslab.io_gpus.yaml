@@ -1,0 +1,97 @@
+
+---
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.2.5
+  creationTimestamp: null
+  name: gpus.doslab.io
+spec:
+  additionalPrinterColumns:
+  - JSONPath: .spec.node
+    description: NODE
+    name: node
+    type: string
+  - JSONPath: .spec.model
+    description: MODEL
+    name: model
+    type: string
+  - JSONPath: .status.allocated.core
+    description: CORE
+    name: core used
+    type: string
+  - JSONPath: .status.allocated.memory
+    description: MEMORY USED
+    name: memory used
+    type: string
+  - JSONPath: .spec.capacity.memory
+    description: MEMORY CAPACITY
+    name: memory capacity
+    type: string
+  group: doslab.io
+  names:
+    kind: GPU
+    listKind: GPUList
+    plural: gpus
+    singular: gpu
+  scope: Namespaced
+  subresources: {}
+  validation:
+    openAPIV3Schema:
+      description: GPU is the Schema for the gpus API
+      properties:
+        apiVersion:
+          description: 'APIVersion defines the versioned schema of this representation
+            of an object. Servers should convert recognized schemas to the latest
+            internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+          type: string
+        kind:
+          description: 'Kind is a string value representing the REST resource this
+            object represents. Servers may infer this from the endpoint the client
+            submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+          type: string
+        metadata:
+          type: object
+        spec:
+          description: GPUSpec defines the desired state of GPU
+          properties:
+            capacity:
+              properties:
+                core:
+                  type: string
+                memory:
+                  type: string
+              type: object
+            family:
+              type: string
+            model:
+              type: string
+            node:
+              type: string
+            uuid:
+              type: string
+          type: object
+        status:
+          description: GPUStatus defines the observed state of GPU
+          properties:
+            allocated:
+              properties:
+                core:
+                  type: string
+                memory:
+                  type: string
+              type: object
+          type: object
+      type: object
+  version: v1
+  versions:
+  - name: v1
+    served: true
+    storage: true
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: []
+  storedVersions: []
