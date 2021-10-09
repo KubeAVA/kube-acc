@@ -14,6 +14,9 @@ RUN apt update && \
     go env -w GOPROXY=https://goproxy.cn,direct && \
     make
 
-FROM alpine:3.9
+FROM debian:stretch-slim
+
+ENV NVIDIA_VISIBLE_DEVICES      all
+ENV NVIDIA_DRIVER_CAPABILITIES  utility
 
 COPY --from=build /go/src/kube-gpu/bin/kube-gpu /usr/bin/kube-gpu

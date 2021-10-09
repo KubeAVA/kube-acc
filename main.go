@@ -19,7 +19,8 @@ import (
 )
 
 const (
-	GPUNamespace     = "default"
+	GPUNamespace      = "default"
+	EnvDaemonNodeName = "DAEMON_NODE_NAME"
 )
 
 var (
@@ -29,12 +30,16 @@ var (
 
 func main() {
 	flag.Parse()
+	if *masterUrl == "" || *token == "" {
+		log.Fatalln("Error masterUrl or token.")
+	}
+
 	client := kubesys.NewKubernetesClient(*masterUrl, *token)
 	client.Init()
 
-	nodeName, err := os.Hostname()
-	if err != nil {
-		log.Fatalf("Failed to get node name, %s.", err)
+	nodeName := os.Getenv(EnvDaemonNodeName)
+	if nodeName == "" {
+		log.Fatalln("Failed to get env DaemonNodeName.")
 	}
 
 	log.Infoln("Loading NVML...")
@@ -54,7 +59,7 @@ func main() {
 	daemon := node_daemon.NewNodeDaemon(client, podMgr, nodeName)
 	daemon.Listen(podMgr)
 
-	go daemon.Run()
+	go daemon.Run(nodeName)
 
 	// device plugin
 	log.Infof("Starting device plugin on %s.", nodeName)

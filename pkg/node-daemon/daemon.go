@@ -49,12 +49,8 @@ func NewNodeDaemon(client *kubesys.KubernetesClient, podMgr *PodManager, nodeNam
 	}
 }
 
-func (daemon *NodeDaemon) Run() {
-	err := os.MkdirAll(GemLibraryPath, os.ModePerm)
-	if err != nil {
-		log.Fatalf("Failed to create fir %s, %s.", GemLibraryPath, err)
-	}
-	err = os.MkdirAll(GemSchedulerGPUConfigPath, os.ModePerm)
+func (daemon *NodeDaemon) Run(hostname string) {
+	err := os.MkdirAll(GemSchedulerGPUConfigPath, os.ModePerm)
 	if err != nil {
 		log.Fatalf("Failed to create fir %s, %s.", GemSchedulerGPUConfigPath, err)
 	}
@@ -79,11 +75,6 @@ func (daemon *NodeDaemon) Run() {
 	n, err := nvml.GetDeviceCount()
 	if err != nil {
 		log.Fatalf("Failed to get device count, %s.", err)
-	}
-
-	hostname, err := os.Hostname()
-	if err != nil {
-		log.Fatalln("Failed to get hostname.")
 	}
 
 	for index := uint(0); index < n; index++ {

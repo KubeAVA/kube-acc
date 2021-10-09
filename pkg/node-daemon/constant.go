@@ -5,7 +5,6 @@
 package node_daemon
 
 const (
-	GemLibraryPath                     = "/kubeshare/library/"
 	GemSchedulerIpPath                 = "/kubeshare/library/schedulerIP.txt"
 	GemSchedulerGPUConfigPath          = "/kubeshare/scheduler/config/"
 	GemSchedulerGPUPodManagerPortPath  = "/kubeshare/scheduler/podmanagerport/"
