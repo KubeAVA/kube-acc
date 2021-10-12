@@ -164,6 +164,10 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonutil.ObjectNode) {
 		return
 	}
 
+	if annotations.Object[AnnGemSchedulerIp] != nil {
+		return
+	}
+
 	podName := meta.GetString("name")
 	namespace := meta.GetString("namespace")
 
