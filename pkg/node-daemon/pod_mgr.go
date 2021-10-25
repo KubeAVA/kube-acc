@@ -5,8 +5,9 @@
 package node_daemon
 
 import (
+	"encoding/json"
 	"github.com/kubesys/kube-alloc/pkg/util"
-	jsonutil "github.com/kubesys/kubernetes-client-go/pkg/util"
+	"github.com/kubesys/kubernetes-client-go/pkg/kubesys"
 	"sync"
 )
 
@@ -25,13 +26,15 @@ func (podMgr *PodManager) DoAdded(obj map[string]interface{}) {
 }
 
 func (podMgr *PodManager) DoModified(obj map[string]interface{}) {
+	bytes, _ := json.Marshal(obj)
 	podMgr.muOfModify.Lock()
-	podMgr.queueOfModified.Add(jsonutil.NewObjectNodeWithValue(obj))
+	podMgr.queueOfModified.Add(kubesys.ToJsonObject(bytes))
 	podMgr.muOfModify.Unlock()
 }
 
 func (podMgr *PodManager) DoDeleted(obj map[string]interface{}) {
+	bytes, _ := json.Marshal(obj)
 	podMgr.muOfDelete.Lock()
-	podMgr.queueOfDeleted.Add(jsonutil.NewObjectNodeWithValue(obj))
+	podMgr.queueOfDeleted.Add(kubesys.ToJsonObject(bytes))
 	podMgr.muOfDelete.Unlock()
 }

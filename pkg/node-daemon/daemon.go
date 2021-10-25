@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"github.com/NVIDIA/gpu-monitoring-tools/bindings/go/nvml"
 	v1 "github.com/kubesys/kube-alloc/pkg/apis/doslab.io/v1"
+	jsonObj "github.com/kubesys/kubernetes-client-go/pkg/json"
 	"github.com/kubesys/kubernetes-client-go/pkg/kubesys"
-	jsonutil "github.com/kubesys/kubernetes-client-go/pkg/util"
 	log "github.com/sirupsen/logrus"
 	"io"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +28,7 @@ type NodeDaemon struct {
 	PodMgr         *PodManager
 	NodeName       string
 	PortMap        map[int]bool
+	PortUseByPod   map[string]int
 	PodVisited     map[string]bool
 	GpuNameByUuid  map[string]string
 	GemSchedulerIp string
@@ -44,6 +45,7 @@ func NewNodeDaemon(client *kubesys.KubernetesClient, podMgr *PodManager, nodeNam
 		PodMgr:        podMgr,
 		NodeName:      nodeName,
 		PortMap:       portMap,
+		PortUseByPod:  make(map[string]int),
 		PodVisited:    make(map[string]bool),
 		GpuNameByUuid: make(map[string]string),
 	}
@@ -154,22 +156,24 @@ func (daemon *NodeDaemon) Listen(podMgr *PodManager) {
 	go daemon.Client.WatchResources("Pod", "", podWatcher)
 }
 
-func (daemon *NodeDaemon) modifyPod(pod *jsonutil.ObjectNode) {
-	meta := pod.GetObjectNode("metadata")
-	if meta.Object["annotations"] == nil {
+func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
+	meta := pod.GetJsonObject("metadata")
+	if !meta.HasKey("annotations") {
 		return
 	}
-	annotations := meta.GetObjectNode("annotations")
-	if annotations.Object[AnnAssumeTime] == nil {
-		return
-	}
-
-	if annotations.Object[AnnGemSchedulerIp] != nil {
+	annotations := meta.GetJsonObject("annotations")
+	if !annotations.HasKey(AnnAssumeTime) {
 		return
 	}
 
-	podName := meta.GetString("name")
-	namespace := meta.GetString("namespace")
+	podName, err := meta.GetString("name")
+	if err != nil {
+		log.Fatalln("Failed to get pod name.")
+	}
+	namespace, err := meta.GetString("namespace")
+	if err != nil {
+		log.Fatalln("Failed to get pod namespace.")
+	}
 
 	daemon.mu.Lock()
 	if daemon.PodVisited[namespace+"/"+podName] {
@@ -182,26 +186,26 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonutil.ObjectNode) {
 	var str1 []string
 	str1 = append(str1, namespace+"/"+podName)
 
-	spec := pod.GetObjectNode("spec")
+	spec := pod.GetJsonObject("spec")
 	requestMemory, requestCore := int64(0), int64(0)
-	containers := spec.GetArray("containers")
-	for _, c := range containers {
-		container := c.(map[string]interface{})
-		if _, ok := container["resources"]; !ok {
+	containers := spec.GetJsonArray("containers")
+	for _, c := range containers.Values() {
+		container := c.JsonObject()
+		if !container.HasKey("resources") {
 			continue
 		}
-		resources := container["resources"].(map[string]interface{})
-		if _, ok := resources["limits"]; !ok {
+		resources := container.GetJsonObject("resources")
+		if !resources.HasKey("limits") {
 			continue
 		}
-		limits := resources["limits"].(map[string]interface{})
-		if val, ok := limits[ResourceMemory]; ok {
-			m, _ := strconv.Atoi(val.(string))
-			requestMemory += int64(m)
+		limits := resources.GetJsonObject("limits")
+		if val, err := limits.GetString(ResourceMemory); err == nil {
+			m, _ := strconv.ParseInt(val, 10, 64)
+			requestMemory += m
 		}
-		if val, ok := limits[ResourceCore]; ok {
-			m, _ := strconv.Atoi(val.(string))
-			requestCore += int64(m)
+		if val, err := limits.GetString(ResourceCore); err == nil {
+			m, _ := strconv.ParseInt(val, 10, 64)
+			requestCore += m
 		}
 	}
 
@@ -216,10 +220,13 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonutil.ObjectNode) {
 
 	fmt.Println(str1)
 
-	gpu := annotations.GetString(ResourceUUID)
+	gpu, err := annotations.GetString(ResourceUUID)
+	if err != nil {
+		log.Fatalln("Failed to get gpu uuid.")
+	}
 
 	// Update gem-gpu-config file
-	err := daemon.updateFile(str1, GemSchedulerGPUConfigPath, gpu)
+	err = daemon.updateFile(str1, GemSchedulerGPUConfigPath, gpu)
 	if err != nil {
 		log.Fatalf("Failed to update gem-gpu-config file, %s.", err)
 	}
@@ -230,6 +237,7 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonutil.ObjectNode) {
 		if !daemon.PortMap[i] {
 			port = i
 			daemon.PortMap[i] = true
+			daemon.PortUseByPod[namespace+"/"+podName] = i
 			break
 		}
 	}
@@ -256,31 +264,43 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonutil.ObjectNode) {
 	}
 
 	time.Sleep(time.Second)
-	copyPod, err := daemon.Client.GetResource("Pod", namespace, podName)
+	copyPodBytes, err := daemon.Client.GetResource("Pod", namespace, podName)
 	if err != nil {
 		log.Fatalf("Failed to get copy pod %s on ns %s, %s.", podName, namespace, err)
 	}
-	copyMeta := copyPod.GetObjectNode("metadata")
-	copyAnnotations := copyMeta.GetObjectNode("annotations")
+	copyPod := kubesys.ToJsonObject(copyPodBytes)
+	copyMeta := copyPod.GetJsonObject("metadata")
+	copyAnnotations := copyMeta.GetJsonObject("annotations")
 
-	copyAnnotations.Object[AnnGemSchedulerIp] = daemon.GemSchedulerIp
-	copyAnnotations.Object[AnnGemPodManagerPort] = strconv.Itoa(port)
-	podByte, _ := json.Marshal(copyPod.Object)
-	_, err = daemon.Client.UpdateResource(string(podByte))
+	copyAnnotations.Put(AnnGemSchedulerIp, daemon.GemSchedulerIp)
+	copyAnnotations.Put(AnnGemPodManagerPort, strconv.Itoa(port))
+	copyMeta.Put("annotations", copyAnnotations.ToInterface())
+	copyPod.Put("metadata", copyMeta.ToInterface())
+
+	_, err = daemon.Client.UpdateResource(copyPod.ToString())
 	if err != nil {
 		log.Fatalf("Failed to set pod %s's annotations, %s.", podName, err)
 	}
 }
 
-func (daemon *NodeDaemon) deletePod(pod *jsonutil.ObjectNode) {
-	meta := pod.GetObjectNode("metadata")
-	if meta.Object["annotations"] == nil {
+func (daemon *NodeDaemon) deletePod(pod *jsonObj.JsonObject) {
+	meta := pod.GetJsonObject("metadata")
+	if !meta.HasKey("annotations") {
 		return
 	}
-	annotations := meta.GetObjectNode("annotations")
+	annotations := meta.GetJsonObject("annotations")
+	if !annotations.HasKey(AnnAssumeTime) {
+		return
+	}
 
-	podName := meta.GetString("name")
-	namespace := meta.GetString("namespace")
+	podName, err := meta.GetString("name")
+	if err != nil {
+		log.Fatalln("Failed to get pod name.")
+	}
+	namespace, err := meta.GetString("namespace")
+	if err != nil {
+		log.Fatalln("Failed to get pod namespace.")
+	}
 
 	daemon.mu.Lock()
 	if !daemon.PodVisited[namespace+"/"+podName] {
@@ -288,12 +308,18 @@ func (daemon *NodeDaemon) deletePod(pod *jsonutil.ObjectNode) {
 		return
 	}
 	daemon.PodVisited[namespace+"/"+podName] = false
+	port := daemon.PortUseByPod[namespace+"/"+podName]
+	daemon.PortMap[port] = false
+	delete(daemon.PortUseByPod, namespace+"/"+podName)
 	daemon.mu.Unlock()
 
-	gpu := annotations.GetString(ResourceUUID)
+	gpu, err := annotations.GetString(ResourceUUID)
+	if err != nil {
+		log.Fatalln("Failed to get gpu uuid.")
+	}
 
 	// Update gem-gpu-config file
-	err := daemon.removeFile(namespace+"/"+podName, GemSchedulerGPUConfigPath, gpu)
+	err = daemon.removeFile(namespace+"/"+podName, GemSchedulerGPUConfigPath, gpu)
 	if err != nil {
 		log.Fatalf("Failed to remove gem-gpu-config file, %s.", err)
 	}

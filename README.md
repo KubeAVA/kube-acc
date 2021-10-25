@@ -6,7 +6,7 @@ Switch to the project root directory.
 
 ### Install GPU CRD
 ```
-kubectl apply -f ./doslab.io_gpus.yaml
+kubectl apply -f ./deploy/doslab.io_gpus.yaml
 ```
 
 ### Make kube-gpu local binary
@@ -16,7 +16,7 @@ make
 
 ### Make kube-gpu docker image
 ```
-docker build -t registry.cn-beijing.aliyuncs.com/doslab/kube-gpu:v0.1-amd64 .
+docker build -t registry.cn-beijing.aliyuncs.com/doslab/kube-gpu:v0.1.1-amd64 .
 ```
 
 ### Run kube-gpu DaemonSet

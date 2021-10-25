@@ -5,11 +5,11 @@
 package util
 
 import (
-	"github.com/kubesys/kubernetes-client-go/pkg/util"
+	jsonObj "github.com/kubesys/kubernetes-client-go/pkg/json"
 )
 
 type Elem struct {
-	value *util.ObjectNode
+	value *jsonObj.JsonObject
 	prev *Elem
 	next *Elem
 }
@@ -28,7 +28,7 @@ func (queue *LinkedQueue) Len() int {
 	return queue.size
 }
 
-func (queue *LinkedQueue) Remove() *util.ObjectNode {
+func (queue *LinkedQueue) Remove() *jsonObj.JsonObject {
 	if queue.size == 0 {
 		return nil
 	}
@@ -38,7 +38,7 @@ func (queue *LinkedQueue) Remove() *util.ObjectNode {
 	return elem.value
 }
 
-func (queue *LinkedQueue) Add(value *util.ObjectNode) {
+func (queue *LinkedQueue) Add(value *jsonObj.JsonObject) {
 	elem := &Elem{value, queue.tail, nil}
 	if queue.size == 0 {
 		queue.head = elem

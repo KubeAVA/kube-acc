@@ -22,7 +22,7 @@ spec:
           mountPath: /kubeshare/library
       containers:
       - name: kube-gpu
-        image: registry.cn-beijing.aliyuncs.com/doslab/kube-gpu:v0.1-amd64
+        image: registry.cn-beijing.aliyuncs.com/doslab/kube-gpu:v0.1.1-amd64
         env:
         - name: GEM_SCHEDULER_IP
           valueFrom:

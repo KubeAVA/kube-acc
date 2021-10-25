@@ -31,9 +31,8 @@ func (m *KubeMessenger) getNode() *v1.Node {
 	if err != nil {
 		return nil
 	}
-	nodeBytes, _ := json.Marshal(node.Object)
 	var out v1.Node
-	err = json.Unmarshal(nodeBytes, &out)
+	err = json.Unmarshal(node, &out)
 	if err != nil {
 		return nil
 	}
@@ -77,9 +76,8 @@ func (m* KubeMessenger) updateNodeStatus(node *v1.Node) error {
 func (m *KubeMessenger) GetPendingPodsOnNode() []v1.Pod {
 	var pods []v1.Pod
 	podList, _ := m.client.ListResources("Pod", "")
-	podListBytes, _ := json.Marshal(podList.Object)
 	var podListObject v1.PodList
-	json.Unmarshal(podListBytes, &podListObject)
+	json.Unmarshal(podList, &podListObject)
 	for _, pod := range podListObject.Items {
 		if pod.Spec.NodeName == m.nodeName && pod.Status.Phase == "Pending" {
 			pod.Kind = "Pod"
@@ -107,9 +105,8 @@ func (m *KubeMessenger) GetPodOnNode(podName, namespace string) *v1.Pod {
 	if err != nil {
 		return nil
 	}
-	podBytes, _ := json.Marshal(pod.Object)
 	var out v1.Pod
-	err = json.Unmarshal(podBytes, &out)
+	err = json.Unmarshal(pod, &out)
 	if err != nil {
 		return nil
 	}
