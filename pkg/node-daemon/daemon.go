@@ -218,8 +218,6 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 	}
 	str1[len(str1)-1] += "\n"
 
-	fmt.Println(str1)
-
 	gpu, err := annotations.GetString(ResourceUUID)
 	if err != nil {
 		log.Fatalln("Failed to get gpu uuid.")

@@ -166,8 +166,8 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 	pendingPods := p.messenger.GetPendingPodsOnNode()
 	var candidatePods []*v1.Pod
 	for _, pod := range pendingPods {
-		if isCandidatePod(&pod) {
-			candidatePods = append(candidatePods, &pod)
+		if isCandidatePod(pod) {
+			candidatePods = append(candidatePods, pod)
 		}
 	}
 
@@ -383,6 +383,7 @@ func (this orderedPodByAssumeTime) Less(i, j int) bool {
 func (this orderedPodByAssumeTime) Swap(i, j int) {
 	this[i], this[j] = this[j], this[i]
 }
+
 func getAssumeTimeFromPodAnnotation(pod *v1.Pod) uint64 {
 	if assumeTime, ok := pod.Annotations[AnnResourceAssumeTime]; ok {
 		predicateTime, err := strconv.ParseUint(assumeTime, 10, 64)

@@ -73,16 +73,17 @@ func (m* KubeMessenger) updateNodeStatus(node *v1.Node) error {
 	return nil
 }
 
-func (m *KubeMessenger) GetPendingPodsOnNode() []v1.Pod {
-	var pods []v1.Pod
+func (m *KubeMessenger) GetPendingPodsOnNode() []*v1.Pod {
+	var pods []*v1.Pod
 	podList, _ := m.client.ListResources("Pod", "")
 	var podListObject v1.PodList
 	json.Unmarshal(podList, &podListObject)
 	for _, pod := range podListObject.Items {
 		if pod.Spec.NodeName == m.nodeName && pod.Status.Phase == "Pending" {
-			pod.Kind = "Pod"
-			pod.APIVersion = "v1"
-			pods = append(pods, pod)
+			podCopy := pod.DeepCopy()
+			podCopy.Kind = "Pod"
+			podCopy.APIVersion = "v1"
+			pods = append(pods, podCopy)
 		}
 	}
 	return pods
