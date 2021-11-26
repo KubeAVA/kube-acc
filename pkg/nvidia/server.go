@@ -17,8 +17,11 @@ import (
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -97,6 +100,11 @@ func (p *NvidiaDevicePlugin) Stop() error {
 }
 
 func (p *NvidiaDevicePlugin) Serve() error {
+	err := syscall.Unlink(p.socket)
+	if err != nil && !os.IsNotExist(err) {
+		log.Errorf("Remove %s error %s.", p.socket, err)
+		return nil
+	}
 	sock, err := net.Listen("unix", p.socket)
 	if err != nil {
 		return err
@@ -153,14 +161,18 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 	responses := pluginapi.AllocateResponse{}
 
 	var (
-		podReqGPUCount uint
-		found          bool
-		assumePod      *v1.Pod
+		podReqGPUCount  uint
+		found           bool
+		assumePod       *v1.Pod
+		assumeContainer *v1.Container
 	)
 
-	for _, req := range reqs.ContainerRequests {
-		podReqGPUCount += uint(len(req.DevicesIDs))
+	if len(reqs.ContainerRequests) < 1 {
+		return nil, errors.New("no container request")
 	}
+
+	req := reqs.ContainerRequests[0]
+	podReqGPUCount += uint(len(req.DevicesIDs))
 	log.Infof("Pod request GPU count is %d.", podReqGPUCount)
 
 	pendingPods := p.messenger.GetPendingPodsOnNode()
@@ -183,11 +195,15 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 		for _, container := range pod.Spec.Containers {
 			if val, ok := container.Resources.Limits[ResourceName]; ok {
 				resourceTotal += uint(val.Value())
+				if resourceTotal == podReqGPUCount {
+					assumePod = pod
+					assumeContainer = &container
+					found = true
+					break
+				}
 			}
 		}
-		if resourceTotal == podReqGPUCount {
-			assumePod = pod
-			found = true
+		if found {
 			break
 		}
 	}
@@ -203,8 +219,6 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 		log.Warningf("Failed to get gpu id for pod %s in ns %s.", assumePod.Name, assumePod.Namespace)
 	}
 
-	gemSchedulerIp := ""
-	gemPodManagerPort := ""
 	isOk := false
 	for i := 0; i < 100; i++ {
 		pod := p.messenger.GetPodOnNode(assumePod.Name, assumePod.Namespace)
@@ -213,9 +227,8 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 			time.Sleep(time.Millisecond * 100)
 			continue
 		}
-		gemSchedulerIp = getGemSchedulerIpFromPodAnnotation(pod)
-		gemPodManagerPort = getGemPodManagerPortFromPodAnnotation(pod)
-		if gemSchedulerIp != "" && gemPodManagerPort != "" {
+		ready := getVCUDAReadyFromPodAnnotation(pod)
+		if ready != "" {
 			isOk = true
 			assumePod = pod
 			break
@@ -224,27 +237,57 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 	}
 
 	if !isOk {
-		return nil, errors.New("no gem-scheduler-ip, gem-podmanager-port or gem-file")
+		return nil, errors.New("vcuda not ready")
 	}
 
-	for _, req := range reqs.ContainerRequests {
-		reqGPU := uint(len(req.DevicesIDs))
-		response := pluginapi.ContainerAllocateResponse{
-			Envs: map[string]string{
-				EnvNvidiaDriverCapabilities: "compute,utility",
-				EnvLDPreload:                KubeShareLibraryPath + "/libgemhook.so.1",
-				EnvPodManagerIp:             gemSchedulerIp,
-				EnvPodManagerPort:           gemPodManagerPort,
-				EnvPodName:                  assumePod.Name,
-				EnvNvidiaGPU:                gpuId,
-				EnvResourceUUID:             gpuId,
-				EnvResourceUsedByPod:        fmt.Sprintf("%d", podReqGPUCount),
-				EnvResourceUsedByContainer:  fmt.Sprintf("%d", reqGPU),
-				EnvResourceTotal:            fmt.Sprintf("%d", len(p.devices)),
-			},
-		}
-		responses.ContainerResponses = append(responses.ContainerResponses, &response)
+	resp := &pluginapi.ContainerAllocateResponse{
+		Envs:        make(map[string]string),
+		Mounts:      make([]*pluginapi.Mount, 0),
+		Devices:     make([]*pluginapi.DeviceSpec, 0),
+		Annotations: make(map[string]string),
 	}
+
+	resp.Devices = append(resp.Devices, &pluginapi.DeviceSpec{
+		ContainerPath: NvidiaCtlDevice,
+		HostPath:      NvidiaCtlDevice,
+		Permissions:   "rwm",
+	})
+	resp.Devices = append(resp.Devices, &pluginapi.DeviceSpec{
+		ContainerPath: NvidiaUVMDevice,
+		HostPath:      NvidiaUVMDevice,
+		Permissions:   "rwm",
+	})
+
+	resp.Envs = map[string]string{
+		EnvNvidiaDriverCapabilities: "compute,utility",
+		EnvPodName:                  assumePod.Name,
+		EnvNvidiaGPU:                gpuId,
+		EnvResourceUUID:             gpuId,
+		EnvResourceUsedByPod:        fmt.Sprintf("%d", podReqGPUCount),
+		EnvResourceUsedByContainer:  fmt.Sprintf("%d", uint(len(req.DevicesIDs))),
+		EnvResourceTotal:            fmt.Sprintf("%d", len(p.devices)),
+	}
+
+	resp.Envs["LD_LIBRARY_PATH"] = "/usr/local/nvidia/lib64"
+
+	for _, env := range assumeContainer.Env {
+		if env.Name == "compat32" && strings.ToLower(env.Value) == "true" {
+			resp.Envs["LD_LIBRARY_PATH"] = "/usr/local/nvidia/lib"
+		}
+	}
+
+	resp.Mounts = append(resp.Mounts, &pluginapi.Mount{
+		ContainerPath: "/usr/local/nvidia",
+		HostPath:      DriverLibraryPath,
+		ReadOnly:      true,
+	})
+	resp.Mounts = append(resp.Mounts, &pluginapi.Mount{
+		ContainerPath: VCUDA_MOUNTPOINT,
+		HostPath:      filepath.Join(VirtualManagerPath, string(assumePod.UID)),
+		ReadOnly:      true,
+	})
+
+	responses.ContainerResponses = append(responses.ContainerResponses, resp)
 
 	newPod := assumePod.DeepCopy()
 	newPod.Annotations[AnnAssignedFlag] = "true"
@@ -258,6 +301,18 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 	log.Infof("Pod %s in ns %s allocate gpu successed.", newPod.Name, newPod.Namespace)
 
 	return &responses, nil
+}
+
+func (p *NvidiaDevicePlugin) PreStartContainer(context.Context, *pluginapi.PreStartContainerRequest) (*pluginapi.PreStartContainerResponse, error) {
+	return &pluginapi.PreStartContainerResponse{}, nil
+}
+
+func (p *NvidiaDevicePlugin) GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
+	return &pluginapi.DevicePluginOptions{}, nil
+}
+
+func (p *NvidiaDevicePlugin) GetPreferredAllocation(context.Context, *pluginapi.PreferredAllocationRequest) (*pluginapi.PreferredAllocationResponse, error) {
+	return &pluginapi.PreferredAllocationResponse{}, nil
 }
 
 func (p *NvidiaDevicePlugin) cleanup() {
@@ -282,18 +337,6 @@ func dial(unixSocketPath string, timeout time.Duration) (*grpc.ClientConn, error
 	}
 
 	return c, nil
-}
-
-func (p *NvidiaDevicePlugin) GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
-	return &pluginapi.DevicePluginOptions{}, nil
-}
-
-func (p *NvidiaDevicePlugin) PreStartContainer(context.Context, *pluginapi.PreStartContainerRequest) (*pluginapi.PreStartContainerResponse, error) {
-	return &pluginapi.PreStartContainerResponse{}, nil
-}
-
-func (p *NvidiaDevicePlugin) GetPreferredAllocation(context.Context, *pluginapi.PreferredAllocationRequest) (*pluginapi.PreferredAllocationResponse, error) {
-	return &pluginapi.PreferredAllocationResponse{}, nil
 }
 
 func isCandidatePod(pod *v1.Pod) bool {
@@ -322,6 +365,19 @@ func isCandidatePod(pod *v1.Pod) bool {
 	}
 }
 
+func getVCUDAReadyFromPodAnnotation(pod *v1.Pod) string {
+	ready := ""
+	if len(pod.ObjectMeta.Annotations) > 0 {
+		value, found := pod.ObjectMeta.Annotations[AnnVCUDAReady]
+		if found {
+			ready = value
+		} else {
+			log.Warningf("Failed to get vcuda flag for pod %s in ns %s.", pod.Name, pod.Namespace)
+		}
+	}
+	return ready
+}
+
 func getGPUIDFromPodAnnotation(pod *v1.Pod) (uuid string) {
 	uuid = ""
 	if len(pod.ObjectMeta.Annotations) > 0 {
@@ -335,39 +391,13 @@ func getGPUIDFromPodAnnotation(pod *v1.Pod) (uuid string) {
 	return uuid
 }
 
-func getGemSchedulerIpFromPodAnnotation(pod *v1.Pod) string {
-	id := ""
-	if len(pod.ObjectMeta.Annotations) > 0 {
-		value, found := pod.ObjectMeta.Annotations[AnnGemSchedulerIp]
-		if found {
-			id = value
-		} else {
-			log.Warningf("Failed to get gem-scheduler-ip for pod %s in ns %s.", pod.Name, pod.Namespace)
-		}
-	}
-	return id
-}
-
-func getGemPodManagerPortFromPodAnnotation(pod *v1.Pod) string {
-	port := ""
-	if len(pod.ObjectMeta.Annotations) > 0 {
-		value, found := pod.ObjectMeta.Annotations[AnnGemPodManagerPort]
-		if found {
-			port = value
-		} else {
-			log.Warningf("Failed to get gem-podmanager-port for pod %s in ns %s.", pod.Name, pod.Namespace)
-		}
-	}
-	return port
-}
-
 func sortPodByAssumeTime(pods []*v1.Pod) []*v1.Pod {
 	podList := make(orderedPodByAssumeTime, 0, len(pods))
 	for _, v := range pods {
 		podList = append(podList, v)
 	}
 	sort.Sort(podList)
-	return []*v1.Pod(podList)
+	return podList
 }
 
 type orderedPodByAssumeTime []*v1.Pod

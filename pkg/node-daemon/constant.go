@@ -16,6 +16,13 @@ const (
 	GPUCRDAPIVersion = "doslab.io/v1"
 	GPUCRDNamespace  = "default"
 
+	VCUDASocket = "vcuda.sock"
+
+	VirtualManagerPath = "/etc/kube-gpu/vm"
+
+	PidsConfig  = "pids.config"
+	VCUDAConfig = "vcuda.config"
+
 	AnnAssumeTime        = "doslab.io/gpu-assume-time"
 	AnnGemSchedulerIp    = "doslab.io/gem-scheduler-ip"
 	AnnGemPodManagerPort = "doslab.io/gem-podmanager-port"

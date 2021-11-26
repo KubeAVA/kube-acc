@@ -13,10 +13,15 @@ const (
 	ResourceCore  = "doslab.io/gpu-core"
 
 	AnnResourceAssumeTime = "doslab.io/gpu-assume-time"
-	AnnGemSchedulerIp     = "doslab.io/gem-scheduler-ip"
 	AnnAssignedFlag       = "doslab.io/gpu-assigned"
 	AnnResourceUUID       = "doslab.io/gpu-uuid"
-	AnnGemPodManagerPort  = "doslab.io/gem-podmanager-port"
+	AnnVCUDAReady         = "doslab.io/vcuda"
+
+	NvidiaCtlDevice    = "/dev/nvidiactl"
+	NvidiaUVMDevice    = "/dev/nvidia-uvm"
+	DriverLibraryPath  = "/etc/kube-gpu/vdriver/nvidia"
+	VirtualManagerPath = "/etc/kube-gpu/vm"
+	VCUDA_MOUNTPOINT   = "/etc/vcuda"
 
 	EnvResourceUUID            = "DOSLAB_IO_GPU_UUID"
 	EnvResourceUsedByPod       = "DOSLAB_IO_GPU_RESOURCE_USED_BY_POD"
@@ -25,10 +30,5 @@ const (
 
 	EnvNvidiaGPU                = "NVIDIA_VISIBLE_DEVICES"
 	EnvPodName                  = "POD_NAME"
-	EnvPodManagerPort           = "POD_MANAGER_PORT"
-	EnvPodManagerIp             = "POD_MANAGER_IP"
-	EnvLDPreload                = "LD_PRELOAD"
 	EnvNvidiaDriverCapabilities = "NVIDIA_DRIVER_CAPABILITIES"
-
-	KubeShareLibraryPath = "/kubeshare/library"
 )
