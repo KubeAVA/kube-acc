@@ -5,14 +5,6 @@
 package node_daemon
 
 const (
-	GemSchedulerIpPath                 = "/kubeshare/library/schedulerIP.txt"
-	GemSchedulerGPUConfigPath          = "/kubeshare/scheduler/config/"
-	GemSchedulerGPUPodManagerPortPath  = "/kubeshare/scheduler/podmanagerport/"
-	GemSchedulerGPUPodManagerPortStart = 50050
-	GemSchedulerGPUPodManagerPortEnd   = 50550
-
-	EnvGemSchedulerIp = "GEM_SCHEDULER_IP"
-
 	GPUCRDAPIVersion = "doslab.io/v1"
 	GPUCRDNamespace  = "default"
 
@@ -23,11 +15,18 @@ const (
 	PidsConfig  = "pids.config"
 	VCUDAConfig = "vcuda.config"
 
-	AnnAssumeTime        = "doslab.io/gpu-assume-time"
-	AnnGemSchedulerIp    = "doslab.io/gem-scheduler-ip"
-	AnnGemPodManagerPort = "doslab.io/gem-podmanager-port"
+	DriverVersionMajor = 465
+	DriverVersionMinor = 31
+
+	MemoryBlockSize = 1024 * 1024
+
+	AnnAssumeTime = "doslab.io/gpu-assume-time"
+	AnnVCUDAReady = "doslab.io/vcuda"
+
+	PodQOSGuaranteed = "Guaranteed"
+	PodQOSBurstable  = "Burstable"
+	PodQOSBestEffort = "BestEffort"
 
 	ResourceMemory = "doslab.io/gpu-memory"
 	ResourceCore   = "doslab.io/gpu-core"
-	ResourceUUID   = "doslab.io/gpu-uuid"
 )

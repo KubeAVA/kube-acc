@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	GPUNamespace      = "default"
 	EnvDaemonNodeName = "DAEMON_NODE_NAME"
 )
 
@@ -80,9 +79,6 @@ func main() {
 		select {
 		case sig := <-sigChan:
 			devicePlugin.Stop()
-			for _, gpu := range daemon.GpuNameByUuid {
-				daemon.Client.DeleteResource("GPU", GPUNamespace, gpu)
-			}
 			log.Fatalf("Received signal %v, shutting down.", sig)
 		}
 	}()

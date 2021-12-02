@@ -11,12 +11,4 @@ spec:
     resources:
       limits:
         doslab.io/gpu-memory: 818
-        doslab.io/gpu-core: 80
-    volumeMounts:
-    - mountPath: /kubeshare/library
-      name: lib
-  volumes:
-  - name: lib
-    hostPath:
-      path: /kubeshare/library
-      type: Directory
+        doslab.io/gpu-core: 40

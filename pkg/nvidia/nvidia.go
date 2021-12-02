@@ -31,7 +31,7 @@ func GetDevices() ([]*pluginapi.Device, map[uint]string) {
 
 		memory := *d.Memory
 		for i := uint64(0); i < memory; i++ {
-			fakeID := fmt.Sprintf("fakeID---%d---%d",idx, i)
+			fakeID := fmt.Sprintf("fakeID---%d---%d", idx, i)
 			devices = append(devices, &pluginapi.Device{
 				ID:     fakeID,
 				Health: pluginapi.Healthy,

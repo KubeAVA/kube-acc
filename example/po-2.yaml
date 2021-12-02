@@ -10,18 +10,12 @@ spec:
     command: [ "sh", "-c", "python3 /workspace/pytorch-cifar/main.py" ]
     resources:
       limits:
-        doslab.io/gpu-memory: 2055
-        doslab.io/gpu-core: 15
+        doslab.io/gpu-memory: 2455
+        doslab.io/gpu-core: 60
     volumeMounts:
-    - mountPath: /kubeshare/library
-      name: lib
     - mountPath: /workspace
       name: code
   volumes:
-  - name: lib
-    hostPath:
-      path: /kubeshare/library
-      type: Directory
   - name: code
     hostPath:
       path: /root/gpushare/code

@@ -16,7 +16,7 @@ make
 
 ### Make kube-gpu docker image
 ```
-docker build -t registry.cn-beijing.aliyuncs.com/doslab/kube-gpu:v0.1.1-amd64 .
+docker build -t registry.cn-beijing.aliyuncs.com/doslab/kube-gpu:v0.2.0-amd64 .
 ```
 
 ### Run kube-gpu DaemonSet

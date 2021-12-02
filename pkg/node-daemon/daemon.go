@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -117,31 +118,31 @@ import (
 import "C"
 
 type NodeDaemon struct {
-	Client        *kubesys.KubernetesClient
-	PodMgr        *PodManager
-	NodeName      string
-	VCUDAServers  map[string]*grpc.Server
-	PodVisited    map[string]bool
-	coreRequest   map[string]int64
-	memoryRequest map[string]int64
-	GpuNameByUuid map[string]string
-	mu            sync.Mutex
+	Client                *kubesys.KubernetesClient
+	PodMgr                *PodManager
+	NodeName              string
+	VCUDAServers          map[string]*grpc.Server
+	ContainerByUID        map[string]*jsonObj.JsonObject
+	ContainerUIDInPodUID  map[string][]string
+	PodVisitedByPodName   map[string]bool
+	coreRequestByPodUID   map[string]int64
+	memoryRequestByPodUID map[string]int64
+	GpuNameByUuid         map[string]string
+	mu                    sync.Mutex
 }
 
 func NewNodeDaemon(client *kubesys.KubernetesClient, podMgr *PodManager, nodeName string) *NodeDaemon {
-	portMap := make(map[int]bool)
-	for i := GemSchedulerGPUPodManagerPortStart; i <= GemSchedulerGPUPodManagerPortEnd; i++ {
-		portMap[i] = false
-	}
 	return &NodeDaemon{
-		Client:        client,
-		PodMgr:        podMgr,
-		NodeName:      nodeName,
-		VCUDAServers:  make(map[string]*grpc.Server),
-		PodVisited:    make(map[string]bool),
-		coreRequest:   make(map[string]int64),
-		memoryRequest: make(map[string]int64),
-		GpuNameByUuid: make(map[string]string),
+		Client:                client,
+		PodMgr:                podMgr,
+		NodeName:              nodeName,
+		VCUDAServers:          make(map[string]*grpc.Server),
+		ContainerByUID:        make(map[string]*jsonObj.JsonObject),
+		ContainerUIDInPodUID:  make(map[string][]string),
+		PodVisitedByPodName:   make(map[string]bool),
+		coreRequestByPodUID:   make(map[string]int64),
+		memoryRequestByPodUID: make(map[string]int64),
+		GpuNameByUuid:         make(map[string]string),
 	}
 }
 
@@ -149,6 +150,8 @@ func (daemon *NodeDaemon) Run(hostname string) {
 	if err := os.MkdirAll(VirtualManagerPath, 0777); err != nil && !os.IsNotExist(err) {
 		log.Fatalf("Failed to create %s, %s.", VirtualManagerPath, err)
 	}
+
+	daemon.Client.DeleteResource("GPU", GPUCRDNamespace, "")
 
 	n, err := nvml.GetDeviceCount()
 	if err != nil {
@@ -158,7 +161,7 @@ func (daemon *NodeDaemon) Run(hostname string) {
 	for index := uint(0); index < n; index++ {
 		device, err := nvml.NewDevice(index)
 		if err != nil {
-			log.Fatalf("Failed to new device, %s.", err)
+			log.Fatalf("Failed to get device %d, %s.", index, err)
 		}
 
 		gpu := v1.GPU{
@@ -187,6 +190,7 @@ func (daemon *NodeDaemon) Run(hostname string) {
 				},
 			},
 		}
+
 		jb, err := json.Marshal(gpu)
 		if err != nil {
 			log.Fatalf("Failed to marshal gpu struct, %s.", err)
@@ -199,6 +203,14 @@ func (daemon *NodeDaemon) Run(hostname string) {
 	}
 
 	for {
+		if daemon.PodMgr.queueOfAdded.Len() > 0 {
+			daemon.PodMgr.muOfAdd.Lock()
+			pod := daemon.PodMgr.queueOfAdded.Remove()
+			daemon.PodMgr.muOfAdd.Unlock()
+			time.Sleep(5 * time.Millisecond)
+			go daemon.addPod(pod)
+		}
+
 		if daemon.PodMgr.queueOfModified.Len() > 0 {
 			daemon.PodMgr.muOfModify.Lock()
 			pod := daemon.PodMgr.queueOfModified.Remove()
@@ -222,6 +234,39 @@ func (daemon *NodeDaemon) Listen(podMgr *PodManager) {
 	go daemon.Client.WatchResources("Pod", "", podWatcher)
 }
 
+func (daemon *NodeDaemon) addPod(pod *jsonObj.JsonObject) {
+	meta := pod.GetJsonObject("metadata")
+	if !meta.HasKey("annotations") {
+		return
+	}
+	annotations := meta.GetJsonObject("annotations")
+	if !annotations.HasKey(AnnAssumeTime) {
+		return
+	}
+
+	podUID, err := meta.GetString("uid")
+	if err != nil {
+		log.Errorln("Failed to get pod podUID.")
+		return
+	}
+
+	status := pod.GetJsonObject("status")
+	containers := status.GetJsonArray("containerStatuses")
+	for _, c := range containers.Values() {
+		container := c.JsonObject()
+		uidStr, err := container.GetString("containerID")
+		if err != nil {
+			log.Errorln("Failed to get containerUID.")
+			return
+		}
+		uid := strings.Split(uidStr, "docker://")[1]
+		daemon.mu.Lock()
+		daemon.ContainerByUID[uid] = container
+		daemon.ContainerUIDInPodUID[podUID] = append(daemon.ContainerUIDInPodUID[podUID], uid)
+		daemon.mu.Unlock()
+	}
+}
+
 func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 	meta := pod.GetJsonObject("metadata")
 	if !meta.HasKey("annotations") {
@@ -234,51 +279,59 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 
 	podName, err := meta.GetString("name")
 	if err != nil {
-		log.Fatalln("Failed to get pod name.")
+		log.Errorln("Failed to get pod name.")
+		return
 	}
 	namespace, err := meta.GetString("namespace")
 	if err != nil {
-		log.Fatalln("Failed to get pod namespace.")
+		log.Errorln("Failed to get pod namespace.")
+		return
 	}
 	podUID, err := meta.GetString("uid")
 	if err != nil {
-		log.Fatalln("Failed to get pod podUID.")
+		log.Errorln("Failed to get pod podUID.")
+		return
 	}
 
 	daemon.mu.Lock()
-	if daemon.PodVisited[namespace+"/"+podName] {
+	if daemon.PodVisitedByPodName[namespace+"/"+podName] {
 		daemon.mu.Unlock()
 		return
 	}
-	daemon.PodVisited[namespace+"/"+podName] = true
+	daemon.PodVisitedByPodName[namespace+"/"+podName] = true
 	daemon.mu.Unlock()
 
 	// Create VCUDA gRPC server
 	log.Infof("Creating VCUDA gRPC server for pod %s.", podUID)
 	baseDir := filepath.Join(VirtualManagerPath, podUID)
-	sockfile := filepath.Join(baseDir, VCUDASocket)
+	if err := os.MkdirAll(baseDir, 0777); err != nil && !os.IsExist(err) {
+		log.Errorf("Failed to create %s, %s.", baseDir, err)
+		return
+	}
 
+	sockfile := filepath.Join(baseDir, VCUDASocket)
 	err = syscall.Unlink(sockfile)
 	if err != nil && !os.IsNotExist(err) {
-		log.Fatalf("Failed to remove %s error %s.", sockfile, err)
+		log.Errorf("Failed to remove %s, %s.", sockfile, err)
+		return
 	}
 
 	l, err := net.Listen("unix", sockfile)
 	if err != nil {
-		log.Fatalf("Failed to listen for %s, %s.", sockfile, err)
+		log.Errorf("Failed to listen for %s, %s.", sockfile, err)
+		return
 	}
 
 	err = os.Chmod(sockfile, 0777)
 	if err != nil {
-		log.Fatalf("Failed to chmod for %s, %s.", sockfile, err)
+		log.Errorf("Failed to chmod for %s, %s.", sockfile, err)
+		return
 	}
 
 	server := grpc.NewServer([]grpc.ServerOption{}...)
 	vcuda.RegisterVCUDAServiceServer(server, daemon)
-	err = server.Serve(l)
-	if err != nil {
-		log.Fatalf("Failed to start gRPC server for pod %s, %s.", podUID, err)
-	}
+	go server.Serve(l)
+
 	daemon.mu.Lock()
 	daemon.VCUDAServers[podUID] = server
 	daemon.mu.Unlock()
@@ -308,9 +361,30 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 	}
 
 	daemon.mu.Lock()
-	daemon.coreRequest[podUID] = requestCore
-	daemon.memoryRequest[podUID] = requestMemory
+	daemon.coreRequestByPodUID[podUID] = requestCore
+	daemon.memoryRequestByPodUID[podUID] = requestMemory
 	daemon.mu.Unlock()
+
+	// Update annotation
+	time.Sleep(time.Second)
+	copyPodBytes, err := daemon.Client.GetResource("Pod", namespace, podName)
+	if err != nil {
+		log.Errorf("Failed to get copy pod %s on ns %s, %s.", podName, namespace, err)
+		return
+	}
+	copyPod := kubesys.ToJsonObject(copyPodBytes)
+	copyMeta := copyPod.GetJsonObject("metadata")
+	copyAnnotations := copyMeta.GetJsonObject("annotations")
+
+	copyAnnotations.Put(AnnVCUDAReady, "yes")
+	copyMeta.Put("annotations", copyAnnotations.ToInterface())
+	copyPod.Put("metadata", copyMeta.ToInterface())
+
+	_, err = daemon.Client.UpdateResource(copyPod.ToString())
+	if err != nil {
+		log.Errorf("Failed to set pod %s's annotations, %s.", podName, err)
+		return
+	}
 
 }
 
@@ -326,40 +400,40 @@ func (daemon *NodeDaemon) deletePod(pod *jsonObj.JsonObject) {
 
 	podName, err := meta.GetString("name")
 	if err != nil {
-		log.Fatalln("Failed to get pod name.")
+		log.Errorln("Failed to get pod name.")
+		return
 	}
 	namespace, err := meta.GetString("namespace")
 	if err != nil {
-		log.Fatalln("Failed to get pod namespace.")
+		log.Errorln("Failed to get pod namespace.")
+		return
+	}
+	podUID, err := meta.GetString("uid")
+	if err != nil {
+		log.Errorln("Failed to get pod podUID.")
+		return
 	}
 
+	log.Infof("Clean for pod %s.", podUID)
 	daemon.mu.Lock()
-	if !daemon.PodVisited[namespace+"/"+podName] {
+	if !daemon.PodVisitedByPodName[namespace+"/"+podName] {
 		daemon.mu.Unlock()
 		return
 	}
-	daemon.PodVisited[namespace+"/"+podName] = false
-	port := daemon.PortUseByPod[namespace+"/"+podName]
-	daemon.PortMap[port] = false
-	delete(daemon.PortUseByPod, namespace+"/"+podName)
+	daemon.PodVisitedByPodName[namespace+"/"+podName] = false
+	delete(daemon.coreRequestByPodUID, podUID)
+	delete(daemon.memoryRequestByPodUID, podUID)
+	daemon.VCUDAServers[podUID].Stop()
+	delete(daemon.VCUDAServers, podUID)
+	if val, ok := daemon.ContainerUIDInPodUID[podUID]; ok {
+		for _, id := range val {
+			delete(daemon.ContainerByUID, id)
+		}
+	}
+	delete(daemon.ContainerUIDInPodUID, podUID)
 	daemon.mu.Unlock()
 
-	gpu, err := annotations.GetString(ResourceUUID)
-	if err != nil {
-		log.Fatalln("Failed to get gpu uuid.")
-	}
-
-	// Update gem-gpu-config file
-	err = daemon.removeFile(namespace+"/"+podName, GemSchedulerGPUConfigPath, gpu)
-	if err != nil {
-		log.Fatalf("Failed to remove gem-gpu-config file, %s.", err)
-	}
-
-	// Update gem-gpu-pod-manager-port file
-	err = daemon.removeFile(namespace+"/"+podName, GemSchedulerGPUPodManagerPortPath, gpu)
-	if err != nil {
-		log.Fatalf("Failed to remove gem-gpu-port file, %s.", err)
-	}
+	os.RemoveAll(filepath.Clean(filepath.Join(VirtualManagerPath, podUID)))
 
 }
 
@@ -372,33 +446,40 @@ func (daemon *NodeDaemon) RegisterVDevice(ctx context.Context, req *vcuda.VDevic
 	baseDir := filepath.Join(VirtualManagerPath, podUID, containerID)
 
 	if err := os.MkdirAll(baseDir, 0777); err != nil && !os.IsNotExist(err) {
-		log.Fatalf("Failed to create %s, %s.", baseDir, err)
+		log.Errorf("Failed to create %s, %s.", baseDir, err)
+		return nil, err
 	}
 
 	pidFileName := filepath.Join(baseDir, PidsConfig)
 	vcudaFileName := filepath.Join(baseDir, VCUDAConfig)
 
 	// Create pids.config file
-	err := daemon.createPidsFile(pidFileName)
+
+	err := daemon.createPidsFile(pidFileName, containerID, pod)
 	if err != nil {
+		log.Errorf("Failed to create %s, %s.", pidFileName, err)
 		return nil, err
 	}
 
 	// Create vcuda.config file
-	err = daemon.createVCUDAFile(vcudaFileName, podUID, containerID, containerName)
+	err = daemon.createVCUDAFile(vcudaFileName, podUID, containerName)
 	if err != nil {
+		log.Errorf("Failed to create %s, %s.", vcudaFileName, err)
 		return nil, err
 	}
 
 	return &vcuda.VDeviceResponse{}, nil
 }
 
-func (daemon *NodeDaemon) createPidsFile(pidFileName string) error {
+func (daemon *NodeDaemon) createPidsFile(pidFileName, containerID string, pod *jsonObj.JsonObject) error {
 	log.Infof("Write %s", pidFileName)
 	cFileName := C.CString(pidFileName)
 	defer C.free(unsafe.Pointer(cFileName))
 
-	fakePid := int32(999)
+	cgroupPath, err := getCgroupPath(pod, containerID)
+	if err != nil {
+		return err
+	}
 
 	if C.pids_to_disk(cFileName, &fakePid, 4) != 0 {
 		return errors.New("create pids.config file error")
@@ -407,12 +488,12 @@ func (daemon *NodeDaemon) createPidsFile(pidFileName string) error {
 	return nil
 }
 
-func (daemon *NodeDaemon) createVCUDAFile(vcudaFileName, podUID, containerID, containerName string) error {
+func (daemon *NodeDaemon) createVCUDAFile(vcudaFileName, podUID, containerName string) error {
 	log.Infof("Write %s", vcudaFileName)
 	requestMemory, requestCore := int64(0), int64(0)
 	daemon.mu.Lock()
-	requestMemory = daemon.memoryRequest[podUID]
-	requestCore = daemon.coreRequest[podUID]
+	requestMemory = daemon.memoryRequestByPodUID[podUID]
+	requestCore = daemon.coreRequestByPodUID[podUID]
 	daemon.mu.Unlock()
 
 	var vcudaConfig C.struct_resource_data_t
@@ -427,48 +508,17 @@ func (daemon *NodeDaemon) createVCUDAFile(vcudaFileName, podUID, containerID, co
 
 	C.strcpy(&vcudaConfig.pod_uid[0], (*C.char)(unsafe.Pointer(cPodUID)))
 	C.strcpy(&vcudaConfig.container_name[0], (*C.char)(unsafe.Pointer(cContName)))
-	vcudaConfig.gpu_memory = C.uint64_t(requestMemory)
+	vcudaConfig.gpu_memory = C.uint64_t(requestMemory) * MemoryBlockSize
 	vcudaConfig.utilization = C.int(requestCore)
 	vcudaConfig.hard_limit = 1
-	vcudaConfig.driver_version.major = C.int(types.DriverVersionMajor)
-	vcudaConfig.driver_version.minor = C.int(types.DriverVersionMinor)
-
-	if cores >= nvidia.HundredCore {
-		vcudaConfig.enable = 0
-	} else {
-		vcudaConfig.enable = 1
-	}
-
-	if hasLimitCore {
-		vcudaConfig.hard_limit = 0
-		vcudaConfig.limit = C.int(limitCores)
-	}
+	vcudaConfig.driver_version.major = C.int(DriverVersionMajor)
+	vcudaConfig.driver_version.minor = C.int(DriverVersionMinor)
+	vcudaConfig.enable = 1
 
 	if C.setting_to_disk(cFileName, &vcudaConfig) != 0 {
-		return fmt.Errorf("can't sink config %s", filename)
+		return errors.New("create vcuda.config file error")
 	}
 
-}
+	return nil
 
-func getArchFamily(computeMajor, computeMinor int) string {
-	switch computeMajor {
-	case 1:
-		return "Tesla"
-	case 2:
-		return "Fermi"
-	case 3:
-		return "Kepler"
-	case 5:
-		return "Maxwell"
-	case 6:
-		return "Pascal"
-	case 7:
-		if computeMinor < 5 {
-			return "volta"
-		}
-		return "Turing"
-	case 8:
-		return "Ampere"
-	}
-	return "Unknown"
 }

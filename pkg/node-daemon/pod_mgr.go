@@ -12,8 +12,10 @@ import (
 )
 
 type PodManager struct {
+	queueOfAdded    *util.LinkedQueue
 	queueOfModified *util.LinkedQueue
 	queueOfDeleted  *util.LinkedQueue
+	muOfAdd         sync.Mutex
 	muOfModify      sync.Mutex
 	muOfDelete      sync.Mutex
 }
@@ -23,6 +25,10 @@ func NewPodManager(queueOfModified, queueOfDeleted *util.LinkedQueue) *PodManage
 }
 
 func (podMgr *PodManager) DoAdded(obj map[string]interface{}) {
+	bytes, _ := json.Marshal(obj)
+	podMgr.muOfAdd.Lock()
+	podMgr.queueOfAdded.Add(kubesys.ToJsonObject(bytes))
+	podMgr.muOfAdd.Unlock()
 }
 
 func (podMgr *PodManager) DoModified(obj map[string]interface{}) {

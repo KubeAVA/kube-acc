@@ -20,7 +20,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -103,7 +102,7 @@ func (p *NvidiaDevicePlugin) Serve() error {
 	err := syscall.Unlink(p.socket)
 	if err != nil && !os.IsNotExist(err) {
 		log.Errorf("Remove %s error %s.", p.socket, err)
-		return nil
+		return err
 	}
 	sock, err := net.Listen("unix", p.socket)
 	if err != nil {
@@ -161,10 +160,9 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 	responses := pluginapi.AllocateResponse{}
 
 	var (
-		podReqGPUCount  uint
-		found           bool
-		assumePod       *v1.Pod
-		assumeContainer *v1.Container
+		podReqGPUCount uint
+		found          bool
+		assumePod      *v1.Pod
 	)
 
 	if len(reqs.ContainerRequests) < 1 {
@@ -185,7 +183,7 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 
 	if candidatePods == nil || len(candidatePods) == 0 {
 		log.Warningln("There is no candidate pods.")
-		return nil, errors.New("not found candidate pod")
+		return nil, errors.New("no candidate pod")
 	}
 
 	candidatePods = sortPodByAssumeTime(candidatePods)
@@ -197,7 +195,6 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 				resourceTotal += uint(val.Value())
 				if resourceTotal == podReqGPUCount {
 					assumePod = pod
-					assumeContainer = &container
 					found = true
 					break
 				}
@@ -210,13 +207,13 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 
 	if !found {
 		log.Warningln("There is no assume pod.")
-		return nil, errors.New("not found assume pod")
+		return nil, errors.New("no assume pod")
 	}
 
 	gpuId := getGPUIDFromPodAnnotation(assumePod)
 
 	if gpuId == "" {
-		log.Warningf("Failed to get gpu id for pod %s in ns %s.", assumePod.Name, assumePod.Namespace)
+		return nil, errors.New("failed to get gpu id")
 	}
 
 	isOk := false
@@ -270,12 +267,6 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 
 	resp.Envs["LD_LIBRARY_PATH"] = "/usr/local/nvidia/lib64"
 
-	for _, env := range assumeContainer.Env {
-		if env.Name == "compat32" && strings.ToLower(env.Value) == "true" {
-			resp.Envs["LD_LIBRARY_PATH"] = "/usr/local/nvidia/lib"
-		}
-	}
-
 	resp.Mounts = append(resp.Mounts, &pluginapi.Mount{
 		ContainerPath: "/usr/local/nvidia",
 		HostPath:      DriverLibraryPath,
@@ -294,7 +285,7 @@ func (p *NvidiaDevicePlugin) Allocate(ctx context.Context, reqs *pluginapi.Alloc
 
 	err := p.messenger.UpdatePodAnnotations(newPod)
 	if err != nil {
-		log.Warningln("Failed to update pod annotation.")
+		log.Errorf("Failed to update pod annotation for pod %s on ns %s.", assumePod.Name, assumePod.Namespace)
 		return nil, errors.New("failed to update pod annotation")
 	}
 
@@ -372,7 +363,7 @@ func getVCUDAReadyFromPodAnnotation(pod *v1.Pod) string {
 		if found {
 			ready = value
 		} else {
-			log.Warningf("Failed to get vcuda flag for pod %s in ns %s.", pod.Name, pod.Namespace)
+			log.Errorf("Failed to get vcuda flag for pod %s in ns %s.", pod.Name, pod.Namespace)
 		}
 	}
 	return ready
@@ -385,7 +376,7 @@ func getGPUIDFromPodAnnotation(pod *v1.Pod) (uuid string) {
 		if found {
 			uuid = value
 		} else {
-			log.Warningf("Failed to get dev id for pod %s in ns %s.", pod.Name, pod.Namespace)
+			log.Errorf("Failed to get dev id for pod %s in ns %s.", pod.Name, pod.Namespace)
 		}
 	}
 	return uuid

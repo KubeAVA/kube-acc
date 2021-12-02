@@ -10,13 +10,5 @@ spec:
     command: ["sh", "-c", "curl -s https://lsalab.cs.nthu.edu.tw/~ericyeh/KubeShare/demo/mnist.py | python3 -"]
     resources:
       limits:
-        doslab.io/gpu-memory: 331
-        doslab.io/gpu-core: 20
-    volumeMounts:
-    - mountPath: /kubeshare/library
-      name: lib
-  volumes:
-  - name: lib
-    hostPath:
-      path: /kubeshare/library
-      type: Directory
+        doslab.io/gpu-memory: 442
+        doslab.io/gpu-core: 50
