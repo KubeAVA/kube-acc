@@ -11,6 +11,9 @@ const (
 	VCUDASocket = "vcuda.sock"
 
 	VirtualManagerPath = "/etc/kube-gpu/vm"
+	CgroupBase         = "/sys/fs/cgroup/memory"
+
+	CgroupProcs = "cgroup.procs"
 
 	PidsConfig  = "pids.config"
 	VCUDAConfig = "vcuda.config"

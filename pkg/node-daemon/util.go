@@ -5,9 +5,13 @@
 package node_daemon
 
 import (
+	"bufio"
 	"fmt"
 	jsonObj "github.com/kubesys/kubernetes-client-go/pkg/json"
+	log "github.com/sirupsen/logrus"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -46,15 +50,36 @@ func getCgroupPath(pod *jsonObj.JsonObject, containerID string) (string, error) 
 		return "", err
 	}
 
-	name := "kubepods"
+	path := "kubepods"
 	switch qosClass {
 	case PodQOSGuaranteed:
 	case PodQOSBurstable:
-		name = filepath.Join(name, strings.ToLower(PodQOSBurstable))
+		path = filepath.Join(path, strings.ToLower(PodQOSBurstable))
 	case PodQOSBestEffort:
-		name = filepath.Join(name, strings.ToLower(PodQOSBestEffort))
+		path = filepath.Join(path, strings.ToLower(PodQOSBestEffort))
 	}
 
-	name = filepath.Join(name, "pod"+podUID)
-	return fmt.Sprintf("%s/%s", name, containerID), nil
+	path = filepath.Join(path, "pod"+podUID)
+	return fmt.Sprintf("%s/%s", path, containerID), nil
+}
+
+func readProcsFile(file string) ([]int, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		log.Errorf("Can't read %s, %s.", file, err)
+		return nil, nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	pids := make([]int, 0)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if pid, err := strconv.Atoi(line); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+
+	log.Infof("Read from %s, pids: %v.", file, pids)
+	return pids, nil
 }

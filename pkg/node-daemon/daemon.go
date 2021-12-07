@@ -122,11 +122,13 @@ type NodeDaemon struct {
 	PodMgr                *PodManager
 	NodeName              string
 	VCUDAServers          map[string]*grpc.Server
-	ContainerByUID        map[string]*jsonObj.JsonObject
+	PodByUID              map[string]*jsonObj.JsonObject
+	ContainerNameByUid    map[string]string
+	ContainerUIDByName    map[string]string
 	ContainerUIDInPodUID  map[string][]string
 	PodVisitedByPodName   map[string]bool
-	coreRequestByPodUID   map[string]int64
-	memoryRequestByPodUID map[string]int64
+	CoreRequestByPodUID   map[string]int64
+	MemoryRequestByPodUID map[string]int64
 	GpuNameByUuid         map[string]string
 	mu                    sync.Mutex
 }
@@ -137,11 +139,13 @@ func NewNodeDaemon(client *kubesys.KubernetesClient, podMgr *PodManager, nodeNam
 		PodMgr:                podMgr,
 		NodeName:              nodeName,
 		VCUDAServers:          make(map[string]*grpc.Server),
-		ContainerByUID:        make(map[string]*jsonObj.JsonObject),
+		PodByUID:              make(map[string]*jsonObj.JsonObject),
+		ContainerNameByUid:    make(map[string]string),
+		ContainerUIDByName:    make(map[string]string),
 		ContainerUIDInPodUID:  make(map[string][]string),
 		PodVisitedByPodName:   make(map[string]bool),
-		coreRequestByPodUID:   make(map[string]int64),
-		memoryRequestByPodUID: make(map[string]int64),
+		CoreRequestByPodUID:   make(map[string]int64),
+		MemoryRequestByPodUID: make(map[string]int64),
 		GpuNameByUuid:         make(map[string]string),
 	}
 }
@@ -203,14 +207,6 @@ func (daemon *NodeDaemon) Run(hostname string) {
 	}
 
 	for {
-		if daemon.PodMgr.queueOfAdded.Len() > 0 {
-			daemon.PodMgr.muOfAdd.Lock()
-			pod := daemon.PodMgr.queueOfAdded.Remove()
-			daemon.PodMgr.muOfAdd.Unlock()
-			time.Sleep(5 * time.Millisecond)
-			go daemon.addPod(pod)
-		}
-
 		if daemon.PodMgr.queueOfModified.Len() > 0 {
 			daemon.PodMgr.muOfModify.Lock()
 			pod := daemon.PodMgr.queueOfModified.Remove()
@@ -232,39 +228,6 @@ func (daemon *NodeDaemon) Run(hostname string) {
 func (daemon *NodeDaemon) Listen(podMgr *PodManager) {
 	podWatcher := kubesys.NewKubernetesWatcher(daemon.Client, podMgr)
 	go daemon.Client.WatchResources("Pod", "", podWatcher)
-}
-
-func (daemon *NodeDaemon) addPod(pod *jsonObj.JsonObject) {
-	meta := pod.GetJsonObject("metadata")
-	if !meta.HasKey("annotations") {
-		return
-	}
-	annotations := meta.GetJsonObject("annotations")
-	if !annotations.HasKey(AnnAssumeTime) {
-		return
-	}
-
-	podUID, err := meta.GetString("uid")
-	if err != nil {
-		log.Errorln("Failed to get pod podUID.")
-		return
-	}
-
-	status := pod.GetJsonObject("status")
-	containers := status.GetJsonArray("containerStatuses")
-	for _, c := range containers.Values() {
-		container := c.JsonObject()
-		uidStr, err := container.GetString("containerID")
-		if err != nil {
-			log.Errorln("Failed to get containerUID.")
-			return
-		}
-		uid := strings.Split(uidStr, "docker://")[1]
-		daemon.mu.Lock()
-		daemon.ContainerByUID[uid] = container
-		daemon.ContainerUIDInPodUID[podUID] = append(daemon.ContainerUIDInPodUID[podUID], uid)
-		daemon.mu.Unlock()
-	}
 }
 
 func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
@@ -294,12 +257,13 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 	}
 
 	daemon.mu.Lock()
+	defer daemon.mu.Unlock()
+
 	if daemon.PodVisitedByPodName[namespace+"/"+podName] {
-		daemon.mu.Unlock()
 		return
 	}
 	daemon.PodVisitedByPodName[namespace+"/"+podName] = true
-	daemon.mu.Unlock()
+	daemon.PodByUID[podUID] = pod
 
 	// Create VCUDA gRPC server
 	log.Infof("Creating VCUDA gRPC server for pod %s.", podUID)
@@ -332,9 +296,7 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 	vcuda.RegisterVCUDAServiceServer(server, daemon)
 	go server.Serve(l)
 
-	daemon.mu.Lock()
 	daemon.VCUDAServers[podUID] = server
-	daemon.mu.Unlock()
 	log.Infof("Success to create VCUDA gRPC server for pod %s.", podUID)
 
 	spec := pod.GetJsonObject("spec")
@@ -360,10 +322,26 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 		}
 	}
 
-	daemon.mu.Lock()
-	daemon.coreRequestByPodUID[podUID] = requestCore
-	daemon.memoryRequestByPodUID[podUID] = requestMemory
-	daemon.mu.Unlock()
+	daemon.CoreRequestByPodUID[podUID] = requestCore
+	daemon.MemoryRequestByPodUID[podUID] = requestMemory
+
+	status := pod.GetJsonObject("status")
+	containers = status.GetJsonArray("containerStatuses")
+	for _, c := range containers.Values() {
+		container := c.JsonObject()
+		uidStr, err := container.GetString("containerID")
+		if err != nil {
+			continue
+		}
+		name, err := container.GetString("name")
+		if err != nil {
+			continue
+		}
+		uid := strings.Split(uidStr, "docker://")[1]
+		daemon.ContainerNameByUid[uid] = name
+		daemon.ContainerUIDByName[name] = uid
+		daemon.ContainerUIDInPodUID[podUID] = append(daemon.ContainerUIDInPodUID[podUID], uid)
+	}
 
 	// Update annotation
 	time.Sleep(time.Second)
@@ -416,22 +394,26 @@ func (daemon *NodeDaemon) deletePod(pod *jsonObj.JsonObject) {
 
 	log.Infof("Clean for pod %s.", podUID)
 	daemon.mu.Lock()
+	defer daemon.mu.Unlock()
+
 	if !daemon.PodVisitedByPodName[namespace+"/"+podName] {
-		daemon.mu.Unlock()
 		return
 	}
+
 	daemon.PodVisitedByPodName[namespace+"/"+podName] = false
-	delete(daemon.coreRequestByPodUID, podUID)
-	delete(daemon.memoryRequestByPodUID, podUID)
 	daemon.VCUDAServers[podUID].Stop()
+
+	delete(daemon.CoreRequestByPodUID, podUID)
+	delete(daemon.MemoryRequestByPodUID, podUID)
+	delete(daemon.PodByUID, podUID)
 	delete(daemon.VCUDAServers, podUID)
-	if val, ok := daemon.ContainerUIDInPodUID[podUID]; ok {
-		for _, id := range val {
-			delete(daemon.ContainerByUID, id)
-		}
+
+	for _, uid := range daemon.ContainerUIDInPodUID[podUID] {
+		name := daemon.ContainerNameByUid[uid]
+		delete(daemon.ContainerNameByUid, uid)
+		delete(daemon.ContainerUIDByName, name)
 	}
 	delete(daemon.ContainerUIDInPodUID, podUID)
-	daemon.mu.Unlock()
 
 	os.RemoveAll(filepath.Clean(filepath.Join(VirtualManagerPath, podUID)))
 
@@ -442,8 +424,16 @@ func (daemon *NodeDaemon) RegisterVDevice(ctx context.Context, req *vcuda.VDevic
 	containerID := req.ContainerId
 	containerName := req.ContainerName
 
-	log.Infof("Pod %s, container %s call rpc.", podUID, containerID)
-	baseDir := filepath.Join(VirtualManagerPath, podUID, containerID)
+	baseDir := ""
+
+	if len(containerName) > 0 {
+		log.Infof("Pod %s, container name %s call rpc.", podUID, containerName)
+		baseDir = filepath.Join(VirtualManagerPath, podUID, containerName)
+		daemon.mu.Lock()
+		containerID = daemon.ContainerUIDByName[containerName]
+	} else {
+
+	}
 
 	if err := os.MkdirAll(baseDir, 0777); err != nil && !os.IsNotExist(err) {
 		log.Errorf("Failed to create %s, %s.", baseDir, err)
@@ -454,6 +444,10 @@ func (daemon *NodeDaemon) RegisterVDevice(ctx context.Context, req *vcuda.VDevic
 	vcudaFileName := filepath.Join(baseDir, VCUDAConfig)
 
 	// Create pids.config file
+	pod := &jsonObj.JsonObject{}
+	daemon.mu.Lock()
+	pod = daemon.PodByUID[podUID]
+	daemon.mu.Unlock()
 
 	err := daemon.createPidsFile(pidFileName, containerID, pod)
 	if err != nil {
@@ -481,7 +475,31 @@ func (daemon *NodeDaemon) createPidsFile(pidFileName, containerID string, pod *j
 		return err
 	}
 
-	if C.pids_to_disk(cFileName, &fakePid, 4) != 0 {
+	pidsInContainer := make([]int, 0)
+	baseDir := filepath.Join(CgroupBase, cgroupPath)
+
+	filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
+		if info == nil {
+			return nil
+		}
+		if info.IsDir() || info.Name() != CgroupProcs {
+			return nil
+		}
+
+		p, err := readProcsFile(path)
+		if err == nil {
+			pidsInContainer = append(pidsInContainer, p...)
+		}
+
+		return nil
+	})
+
+	pids := make([]C.int, len(pidsInContainer))
+	for i := range pidsInContainer {
+		pids[i] = C.int(pidsInContainer[i])
+	}
+
+	if C.pids_to_disk(cFileName, &pids[0], (C.int)(len(pids))) != 0 {
 		return errors.New("create pids.config file error")
 	}
 
@@ -492,8 +510,8 @@ func (daemon *NodeDaemon) createVCUDAFile(vcudaFileName, podUID, containerName s
 	log.Infof("Write %s", vcudaFileName)
 	requestMemory, requestCore := int64(0), int64(0)
 	daemon.mu.Lock()
-	requestMemory = daemon.memoryRequestByPodUID[podUID]
-	requestCore = daemon.coreRequestByPodUID[podUID]
+	requestMemory = daemon.MemoryRequestByPodUID[podUID]
+	requestCore = daemon.CoreRequestByPodUID[podUID]
 	daemon.mu.Unlock()
 
 	var vcudaConfig C.struct_resource_data_t
