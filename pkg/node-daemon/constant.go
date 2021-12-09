@@ -23,8 +23,9 @@ const (
 
 	MemoryBlockSize = 1024 * 1024
 
-	AnnAssumeTime = "doslab.io/gpu-assume-time"
-	AnnVCUDAReady = "doslab.io/vcuda"
+	AnnAssumeTime   = "doslab.io/gpu-assume-time"
+	AnnVCUDAReady   = "doslab.io/vcuda"
+	AnnAssignedFlag = "doslab.io/gpu-assigned"
 
 	PodQOSGuaranteed = "Guaranteed"
 	PodQOSBurstable  = "Burstable"

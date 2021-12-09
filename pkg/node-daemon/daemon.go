@@ -126,7 +126,8 @@ type NodeDaemon struct {
 	ContainerNameByUid    map[string]string
 	ContainerUIDByName    map[string]string
 	ContainerUIDInPodUID  map[string][]string
-	PodVisitedByPodName   map[string]bool
+	PodVisitedByUID       map[string]bool
+	PodDoByUID            map[string]bool
 	CoreRequestByPodUID   map[string]int64
 	MemoryRequestByPodUID map[string]int64
 	GpuNameByUuid         map[string]string
@@ -143,7 +144,8 @@ func NewNodeDaemon(client *kubesys.KubernetesClient, podMgr *PodManager, nodeNam
 		ContainerNameByUid:    make(map[string]string),
 		ContainerUIDByName:    make(map[string]string),
 		ContainerUIDInPodUID:  make(map[string][]string),
-		PodVisitedByPodName:   make(map[string]bool),
+		PodVisitedByUID:       make(map[string]bool),
+		PodDoByUID:            make(map[string]bool),
 		CoreRequestByPodUID:   make(map[string]int64),
 		MemoryRequestByPodUID: make(map[string]int64),
 		GpuNameByUuid:         make(map[string]string),
@@ -240,6 +242,11 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 		return
 	}
 
+	flag, err := annotations.GetString(AnnAssignedFlag)
+	if err != nil {
+		log.Errorln("Failed to get assigned flag.")
+		return
+	}
 	podName, err := meta.GetString("name")
 	if err != nil {
 		log.Errorln("Failed to get pod name.")
@@ -257,13 +264,62 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 	}
 
 	daemon.mu.Lock()
-	defer daemon.mu.Unlock()
+	if flag == "true" && !daemon.PodDoByUID[podUID] {
+		daemon.mu.Unlock()
+		status := pod.GetJsonObject("status")
 
-	if daemon.PodVisitedByPodName[namespace+"/"+podName] {
+		ready := false
+		for i := 0; i < 100; i++ {
+			if !status.HasKey("containerStatuses") {
+				log.Errorf("Pod %s on ns %s has no containerStatuses, try later.", podName, namespace)
+				time.Sleep(time.Millisecond * 100)
+				podByte, err := daemon.Client.GetResource("Pod", namespace, podName)
+				if err != nil {
+					log.Errorf("Failed to get pod %s on ns %, %s.", podName, namespace, err)
+					return
+				}
+				pod := kubesys.ToJsonObject(podByte)
+				status = pod.GetJsonObject("status")
+			} else {
+				ready = true
+				break
+			}
+		}
+
+		if !ready {
+			log.Errorf("Pod %s on ns %s has no containerStatuses.", podName, namespace)
+			return
+		}
+
+		daemon.mu.Lock()
+		containers := status.GetJsonArray("containerStatuses")
+		for _, c := range containers.Values() {
+			container := c.JsonObject()
+			uidStr, err := container.GetString("containerID")
+			if err != nil {
+				continue
+			}
+			name, err := container.GetString("name")
+			if err != nil {
+				continue
+			}
+			uid := strings.Split(uidStr, "docker://")[1]
+			daemon.ContainerNameByUid[uid] = name
+			daemon.ContainerUIDByName[name] = uid
+			daemon.ContainerUIDInPodUID[podUID] = append(daemon.ContainerUIDInPodUID[podUID], uid)
+		}
+
+		daemon.PodDoByUID[podUID] = true
+	}
+
+	if daemon.PodVisitedByUID[podUID] {
+		daemon.mu.Unlock()
 		return
 	}
-	daemon.PodVisitedByPodName[namespace+"/"+podName] = true
+
+	daemon.PodVisitedByUID[podUID] = true
 	daemon.PodByUID[podUID] = pod
+	daemon.mu.Unlock()
 
 	// Create VCUDA gRPC server
 	log.Infof("Creating VCUDA gRPC server for pod %s.", podUID)
@@ -296,7 +352,9 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 	vcuda.RegisterVCUDAServiceServer(server, daemon)
 	go server.Serve(l)
 
+	daemon.mu.Lock()
 	daemon.VCUDAServers[podUID] = server
+	daemon.mu.Unlock()
 	log.Infof("Success to create VCUDA gRPC server for pod %s.", podUID)
 
 	spec := pod.GetJsonObject("spec")
@@ -322,26 +380,10 @@ func (daemon *NodeDaemon) modifyPod(pod *jsonObj.JsonObject) {
 		}
 	}
 
+	daemon.mu.Lock()
 	daemon.CoreRequestByPodUID[podUID] = requestCore
 	daemon.MemoryRequestByPodUID[podUID] = requestMemory
-
-	status := pod.GetJsonObject("status")
-	containers = status.GetJsonArray("containerStatuses")
-	for _, c := range containers.Values() {
-		container := c.JsonObject()
-		uidStr, err := container.GetString("containerID")
-		if err != nil {
-			continue
-		}
-		name, err := container.GetString("name")
-		if err != nil {
-			continue
-		}
-		uid := strings.Split(uidStr, "docker://")[1]
-		daemon.ContainerNameByUid[uid] = name
-		daemon.ContainerUIDByName[name] = uid
-		daemon.ContainerUIDInPodUID[podUID] = append(daemon.ContainerUIDInPodUID[podUID], uid)
-	}
+	daemon.mu.Unlock()
 
 	// Update annotation
 	time.Sleep(time.Second)
@@ -376,16 +418,6 @@ func (daemon *NodeDaemon) deletePod(pod *jsonObj.JsonObject) {
 		return
 	}
 
-	podName, err := meta.GetString("name")
-	if err != nil {
-		log.Errorln("Failed to get pod name.")
-		return
-	}
-	namespace, err := meta.GetString("namespace")
-	if err != nil {
-		log.Errorln("Failed to get pod namespace.")
-		return
-	}
 	podUID, err := meta.GetString("uid")
 	if err != nil {
 		log.Errorln("Failed to get pod podUID.")
@@ -396,17 +428,18 @@ func (daemon *NodeDaemon) deletePod(pod *jsonObj.JsonObject) {
 	daemon.mu.Lock()
 	defer daemon.mu.Unlock()
 
-	if !daemon.PodVisitedByPodName[namespace+"/"+podName] {
+	if !daemon.PodVisitedByUID[podUID] {
 		return
 	}
 
-	daemon.PodVisitedByPodName[namespace+"/"+podName] = false
+	daemon.PodVisitedByUID[podUID] = false
 	daemon.VCUDAServers[podUID].Stop()
 
 	delete(daemon.CoreRequestByPodUID, podUID)
 	delete(daemon.MemoryRequestByPodUID, podUID)
 	delete(daemon.PodByUID, podUID)
 	delete(daemon.VCUDAServers, podUID)
+	delete(daemon.PodDoByUID, podUID)
 
 	for _, uid := range daemon.ContainerUIDInPodUID[podUID] {
 		name := daemon.ContainerNameByUid[uid]
@@ -426,13 +459,35 @@ func (daemon *NodeDaemon) RegisterVDevice(ctx context.Context, req *vcuda.VDevic
 
 	baseDir := ""
 
+	ready := false
+	for i := 0; i < 100; i++ {
+		daemon.mu.Lock()
+		if !daemon.PodDoByUID[podUID] {
+			daemon.mu.Unlock()
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			daemon.mu.Unlock()
+			ready = true
+			break
+		}
+	}
+
+	if !ready {
+		return nil, errors.New("no containerStatuses")
+	}
+
 	if len(containerName) > 0 {
 		log.Infof("Pod %s, container name %s call rpc.", podUID, containerName)
 		baseDir = filepath.Join(VirtualManagerPath, podUID, containerName)
 		daemon.mu.Lock()
 		containerID = daemon.ContainerUIDByName[containerName]
+		daemon.mu.Unlock()
 	} else {
-
+		log.Infof("Pod %s, container id %s call rpc.", podUID, containerID)
+		baseDir = filepath.Join(VirtualManagerPath, podUID, containerID)
+		daemon.mu.Lock()
+		containerName = daemon.ContainerNameByUid[containerID]
+		daemon.mu.Unlock()
 	}
 
 	if err := os.MkdirAll(baseDir, 0777); err != nil && !os.IsNotExist(err) {
@@ -493,6 +548,10 @@ func (daemon *NodeDaemon) createPidsFile(pidFileName, containerID string, pod *j
 
 		return nil
 	})
+
+	if len(pidsInContainer) == 0 {
+		return errors.New("empty pids")
+	}
 
 	pids := make([]C.int, len(pidsInContainer))
 	for i := range pidsInContainer {
