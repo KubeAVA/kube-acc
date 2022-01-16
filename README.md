@@ -1,5 +1,7 @@
 # kube-gpu
 
+## Authors
+
 ## Running
 
 Switch to the project root directory.
