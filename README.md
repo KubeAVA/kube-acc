@@ -2,6 +2,9 @@
 
 ## Authors
 
+- luorongzhou20@otcaix.iscas.ac.cn
+- wuheng@otcaix.iscas.ac.cn
+
 ## Running
 
 Switch to the project root directory.
