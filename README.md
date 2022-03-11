@@ -7,7 +7,7 @@
 
 ## Running
 
-Switch to the project root directory.
+Switch to the project root directory and modify **masterUrl** and **token** in `./deploy/kube-gpu.yaml`, more details in https://github.com/kubesys/client-go
 
 ### Install GPU CRD
 ```

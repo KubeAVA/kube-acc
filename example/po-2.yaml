@@ -7,11 +7,11 @@ spec:
   containers:
   - image: pytorch/pytorch:1.2-cuda10.0-cudnn7-devel
     name: torch
-    command: [ "sh", "-c", "python3 /workspace/pytorch-cifar/main.py" ]
+    command: [ "sh", "-c", "python3 /workspace/main.py" ]
     resources:
       limits:
-        doslab.io/gpu-memory: 2455
-        doslab.io/gpu-core: 60
+        doslab.io/gpu-memory: 2088
+        doslab.io/gpu-core: 20
     volumeMounts:
     - mountPath: /workspace
       name: code
