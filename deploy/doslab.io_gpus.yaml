@@ -23,23 +23,18 @@ spec:
               type: object
               x-kubernetes-preserve-unknown-fields: true
       additionalPrinterColumns:
-        - JSONPath: .spec.node
-          description: NODE
+        - jsonPath: .spec.node
           name: node
           type: string
-        - JSONPath: .spec.model
-          description: MODEL
+        - jsonPath: .spec.model
           name: model
           type: string
-        - JSONPath: .status.allocated.core
-          description: CORE
+        - jsonPath: .status.allocated.core
           name: core used
           type: string
-        - JSONPath: .status.allocated.memory
-          description: MEMORY USED
+        - jsonPath: .status.allocated.memory
           name: memory used
           type: string
-        - JSONPath: .spec.capacity.memory
-          description: MEMORY CAPACITY
+        - jsonPath: .spec.capacity.memory
           name: memory capacity
           type: string
